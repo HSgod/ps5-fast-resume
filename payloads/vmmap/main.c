@@ -9,77 +9,10 @@
 
 #include <ps5/kernel.h>
 
-int sceKernelGetAppInfo(pid_t pid, void *info);
+#include "proc.h"
 
 #define MiB(x) ((double)(x) / (1024.0 * 1024.0))
 #define PG ((uint64_t)PAGE_SIZE)
-
-static int title_of(pid_t pid, char out[10]) {
-  unsigned char raw[0x100];
-  memset(raw, 0, sizeof(raw));
-  out[0] = 0;
-  if (sceKernelGetAppInfo(pid, raw))
-    return -1;
-  for (int i = 0; i + 9 <= (int)sizeof(raw); i++) {
-    int ok = 1;
-    for (int j = 0; j < 4 && ok; j++)
-      ok = isupper(raw[i + j]);
-    for (int j = 4; j < 9 && ok; j++)
-      ok = isdigit(raw[i + j]);
-    if (ok) {
-      memcpy(out, raw + i, 9);
-      out[9] = 0;
-      return i;
-    }
-  }
-  return -1;
-}
-
-static void *sysctl_alloc(int *mib, u_int n, size_t *size) {
-  void *buf = NULL;
-  for (int tries = 0; tries < 4; tries++) {
-    *size = 0;
-    if (sysctl(mib, n, NULL, size, NULL, 0))
-      return NULL;
-    *size += *size / 2 + 0x10000;
-    free(buf);
-    if (!(buf = malloc(*size)))
-      return NULL;
-    if (!sysctl(mib, n, buf, size, NULL, 0))
-      return buf;
-    if (errno != ENOMEM)
-      break;
-  }
-  free(buf);
-  return NULL;
-}
-
-static pid_t find_game(char title[10]) {
-  int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PROC, 0};
-  size_t size;
-  pid_t found = -1;
-  char *buf = sysctl_alloc(mib, 4, &size);
-  if (!buf)
-    return -1;
-  for (char *p = buf; p < buf + size;) {
-    struct kinfo_proc *ki = (struct kinfo_proc *)p;
-    if (ki->ki_structsize <= 0)
-      break;
-    p += ki->ki_structsize;
-    char t[10];
-    if (title_of(ki->ki_pid, t) < 0)
-      continue;
-    if (!strncmp(t, "NPXS", 4))
-      continue;
-    printf("candidate pid %d title %s comm %s\n", ki->ki_pid, t, ki->ki_comm);
-    if (found < 0) {
-      found = ki->ki_pid;
-      memcpy(title, t, 10);
-    }
-  }
-  free(buf);
-  return found;
-}
 
 static const char *type_name(int t) {
   static char tmp[16];
@@ -116,7 +49,7 @@ static void hexdump(const void *p, size_t n) {
 
 int main(void) {
   char title[10] = {0};
-  pid_t pid = find_game(title);
+  pid_t pid = find_game(title, 1);
   if (pid < 0) {
     printf("no game process found\n");
     return 1;

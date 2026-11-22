@@ -34,7 +34,11 @@ static uint32_t app_info(pid_t pid, char title[10]) {
 #define MiB(x) ((x) / (1024.0 * 1024.0))
 
 int main(int argc, char **argv) {
+#ifdef SHOW_ALL
+  int all = 1;
+#else
   int all = argc > 1 && !strcmp(argv[1], "-a");
+#endif
   int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PROC, 0};
   size_t size = 0;
   void *buf;

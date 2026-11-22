@@ -10,10 +10,12 @@ include $(PS5_PAYLOAD_SDK)/toolchain/prospero.mk
 CFLAGS ?= -Wall -Werror -O2 -g
 ELF ?= $(notdir $(CURDIR)).elf
 SRCS ?= $(wildcard *.c)
+LIBSRCS ?=
+CFLAGS += -I../lib
 
 all: $(ELF)
 
-$(ELF): $(SRCS)
+$(ELF): $(SRCS) $(LIBSRCS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 clean:
