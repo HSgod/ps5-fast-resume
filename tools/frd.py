@@ -6,6 +6,7 @@ import sys
 
 HDR = struct.Struct("<8sII16sQIIIIII")
 THR = struct.Struct("<I24sIQQQ")
+THR3 = struct.Struct("<I24sIQQQII")
 REG = struct.Struct("<QQIIII")
 HOLE = struct.Struct("<QQ")
 REGS64 = ["r15", "r14", "r13", "r12", "r11", "r10", "r9", "r8", "rdi", "rsi",
@@ -21,19 +22,24 @@ class Dump:
         (magic, self.version, self.pid, title, self.time, self.nthreads,
          self.nregions, self.page_size, self.reg_size, self.fpreg_size,
          _) = HDR.unpack_from(self.m, 0)
-        if magic != b"FRDUMP\0\1" or self.version not in (1, 2):
+        if magic != b"FRDUMP\0\1" or self.version not in (1, 2, 3):
             sys.exit(f"{path}: bad magic")
         self.title = title.rstrip(b"\0").decode()
         off = HDR.size
         self.threads = []
         for _ in range(self.nthreads):
-            lwpid, name, xlen, xmask, fsbase, gsbase = THR.unpack_from(self.m, off)
-            off += THR.size
+            if self.version >= 3:
+                lwpid, name, xlen, xmask, fsbase, gsbase, tflags, _ = THR3.unpack_from(self.m, off)
+                off += THR3.size
+            else:
+                lwpid, name, xlen, xmask, fsbase, gsbase = THR.unpack_from(self.m, off)
+                tflags = 0
+                off += THR.size
             regs = struct.unpack_from("<15QIHHIHHQQQQQ", self.m, off)
             off += self.reg_size + self.fpreg_size + xlen
             self.threads.append(dict(lwpid=lwpid, name=name.rstrip(b"\0").decode(errors="replace"),
                                      xlen=xlen, xmask=xmask, fsbase=fsbase,
-                                     gsbase=gsbase, regs=regs))
+                                     gsbase=gsbase, flags=tflags, regs=regs))
         (self.nkobjs,) = struct.unpack_from("<I", self.m, HDR.size - 4)
         self.kobjs = []
         for _ in range(self.nkobjs if self.version >= 2 else 0):

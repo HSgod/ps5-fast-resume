@@ -55,6 +55,8 @@ static int dump_threads(int fd, uint32_t *count) {
     struct fpreg fp = {0};
 
     t.lwpid = lwps[i];
+    if (debug_in_syscall(g_pid, lwps[i]))
+      t.flags |= FRD_THREAD_IN_SYSCALL;
     if (!ptrace(PT_LWPINFO, lwps[i], (caddr_t)&li, sizeof(li)))
       strncpy(t.name, li.pl_tdname, sizeof(t.name) - 1);
     if (ptrace(PT_GETREGS, lwps[i], (caddr_t)&r, 0))
@@ -71,8 +73,9 @@ static int dump_threads(int fd, uint32_t *count) {
       }
     }
 
-    printf("  lwp %6d %-20s rip 0x%012lx rsp 0x%012lx fs 0x%012lx\n",
-           t.lwpid, t.name, r.r_rip, r.r_rsp, t.fsbase);
+    printf("  lwp %6d %-20s rip 0x%012lx rsp 0x%012lx fs 0x%012lx%s\n",
+           t.lwpid, t.name, r.r_rip, r.r_rsp, t.fsbase,
+           t.flags & FRD_THREAD_IN_SYSCALL ? " in-syscall" : "");
 
     if (write_all(fd, &t, sizeof(t)) || write_all(fd, &r, sizeof(r)) ||
         write_all(fd, &fp, sizeof(fp)) ||
@@ -174,6 +177,7 @@ int main(void) {
     return 1;
   double t_stop = now();
   debug_drain(g_pid, 300);
+  debug_settle(g_pid, 1000);
   printf("game stopped (%.2fs)\n", t_stop - t0);
 
   int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_VMMAP, g_pid};

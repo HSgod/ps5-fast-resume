@@ -3,7 +3,9 @@
 #include <stdint.h>
 
 #define FRD_MAGIC "FRDUMP\0\1"
-#define FRD_VERSION 2
+#define FRD_VERSION 3
+
+#define FRD_THREAD_IN_SYSCALL 1
 
 struct frd_header {
   char magic[8];
@@ -26,6 +28,8 @@ struct frd_thread {
   uint64_t xsave_mask;
   uint64_t fsbase;
   uint64_t gsbase;
+  uint32_t flags;
+  uint32_t reserved;
 } __attribute__((packed));
 
 struct frd_region {

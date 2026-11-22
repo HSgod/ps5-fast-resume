@@ -1,6 +1,7 @@
 #include <sys/types.h>
 #include <sys/ptrace.h>
 #include <sys/wait.h>
+#include <machine/reg.h>
 #include <signal.h>
 #include <errno.h>
 #include <stdint.h>
@@ -140,4 +141,84 @@ int debug_drain(pid_t pid, int ms) {
     ptrace(PT_RESUME, l[i], NULL, 0);
   free(l);
   return 0;
+}
+
+int debug_in_syscall(pid_t pid, lwpid_t lwp) {
+  struct reg r;
+  uint8_t code[12];
+  if (ptrace(PT_GETREGS, lwp, (caddr_t)&r, 0))
+    return 0;
+  if (kernel_proc_copyout(pid, r.r_rip - sizeof(code), code, sizeof(code)))
+    return 0;
+  if (code[0] != 0x48 || code[1] != 0xc7 || code[2] != 0xc0 || code[7] != 0x49 ||
+      code[8] != 0x89 || code[9] != 0xca || code[10] != 0x0f || code[11] != 0x05)
+    return 0;
+  return (uint64_t)r.r_rax == *(uint32_t *)(code + 3);
+}
+
+int debug_settle(pid_t pid, int timeout_ms) {
+  int n = ptrace(PT_GETNUMLWPS, pid, NULL, 0);
+  if (n <= 0)
+    return -1;
+  lwpid_t *l = calloc(n, sizeof(*l));
+  char *pending = calloc(n, 1);
+  n = ptrace(PT_GETLWPLIST, pid, (caddr_t)l, n);
+  int left = 0, idle = 0;
+  for (int i = 0; i < n; i++) {
+    struct ptrace_lwpinfo li = {0};
+    ptrace(PT_LWPINFO, l[i], (caddr_t)&li, sizeof(li));
+    if (debug_in_syscall(pid, l[i]) && !drain_keeps_running(li.pl_tdname)) {
+      pending[i] = 1;
+      left++;
+    } else {
+      if (drain_keeps_running(li.pl_tdname))
+        idle++;
+      ptrace(PT_SUSPEND, l[i], NULL, 0);
+    }
+  }
+  int total = left;
+  double end = now() + timeout_ms / 1000.0;
+  while (left && now() < end) {
+    if (ptrace(PT_TO_SCX, pid, (caddr_t)1, 0)) {
+      printf("PT_TO_SCX: %s\n", strerror(errno));
+      break;
+    }
+    int st;
+    pid_t w = 0;
+    while (now() < end && (w = waitpid(pid, &st, WNOHANG)) == 0)
+      usleep(1000);
+    if (w == 0) {
+      kill(pid, SIGSTOP);
+      waitpid(pid, &st, 0);
+      break;
+    }
+    if (w < 0 || !WIFSTOPPED(st))
+      break;
+    struct ptrace_lwpinfo li = {0};
+    ptrace(PT_LWPINFO, pid, (caddr_t)&li, sizeof(li));
+    for (int i = 0; i < n; i++) {
+      if (l[i] != li.pl_lwpid)
+        continue;
+      if (pending[i] && !debug_in_syscall(pid, l[i])) {
+        pending[i] = 0;
+        left--;
+      }
+      if (!pending[i])
+        ptrace(PT_SUSPEND, l[i], NULL, 0);
+    }
+  }
+  printf("settle: %d of %d threads were in a syscall, %d still inside, %d event "
+         "threads left waiting\n",
+         total, n, left, idle);
+  for (int i = 0; i < n; i++) {
+    if (pending[i]) {
+      struct ptrace_lwpinfo li = {0};
+      ptrace(PT_LWPINFO, l[i], (caddr_t)&li, sizeof(li));
+      printf("  still in syscall: lwp %d %s\n", l[i], li.pl_tdname);
+    }
+    ptrace(PT_RESUME, l[i], NULL, 0);
+  }
+  free(l);
+  free(pending);
+  return left;
 }
