@@ -7,3 +7,5 @@ dumps/
 *.lz4
 env.local.sh
 .DS_Store
+docs/
+*.sh
