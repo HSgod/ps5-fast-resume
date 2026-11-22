@@ -63,6 +63,23 @@ int main(void) {
   for (int i = 0; i < 12; i++)
     if (regs[i] > 0x10000 && regs[i] < 0x10000000000UL)
       hex(pid, names[i], regs[i] & ~0xfUL, 0x40);
+  uint64_t arr = 0;
+  int32_t cnt = 0;
+  kernel_proc_copyout(pid, r.r_rbp - 0x70, &arr, 8);
+  kernel_proc_copyout(pid, r.r_rbp - 0x68, &cnt, 4);
+  if (!arr)
+    arr = r.r_rbp - 0x90;
+  printf("wait array 0x%lx count %d\n", arr, cnt);
+  for (int i = 0; i < cnt && i < 16; i++) {
+    uint64_t obj = 0;
+    kernel_proc_copyout(pid, arr + 8 * i, &obj, 8);
+    char tag[32];
+    snprintf(tag, sizeof(tag), "task[%d]", i);
+    hex(pid, tag, obj, 0xc0);
+    uint64_t vt = 0;
+    kernel_proc_copyout(pid, obj, &vt, 8);
+    hex(pid, "  vtable", vt, 0x40);
+  }
   free(l);
   return 0;
 }
