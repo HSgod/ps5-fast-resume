@@ -18,6 +18,7 @@
 #include "debug.h"
 #include "frd.h"
 #include "kobj.h"
+#include "vmobj.h"
 #include "proc.h"
 
 #define DUMP_DIR "/data/fast-resume"
@@ -47,6 +48,7 @@ struct thread_state {
   struct fpreg fp;
   void *xstate;
   int live;
+  int keep;
 };
 
 struct vm_entry {
@@ -194,8 +196,15 @@ static int load_threads(int fd, const struct frd_header *h) {
   return missing + extra;
 }
 
+#define MAX_OBJ_TALLY 64
+
+static uint64_t g_dmem_obj;
+
 static int check_regions(int fd, const struct frd_header *h, uint64_t *bytes) {
   int bad = 0;
+  uint64_t tally_obj[MAX_OBJ_TALLY] = {0}, tally_size[MAX_OBJ_TALLY] = {0};
+  int ntally = 0;
+  vmobj_load(g_pid);
   for (uint32_t i = 0; i < h->nregions; i++) {
     struct frd_region r;
     uint32_t nholes;
@@ -215,9 +224,41 @@ static int check_regions(int fd, const struct frd_header *h, uint64_t *bytes) {
       continue;
     }
     *bytes += r.end - r.start;
+    if (r.type == KVME_TYPE_DEVICE) {
+      uint64_t obj = vmobj_of(r.start);
+      int k = 0;
+      while (k < ntally && tally_obj[k] != obj)
+        k++;
+      if (k == ntally && ntally < MAX_OBJ_TALLY)
+        tally_obj[ntally++] = obj;
+      if (k < MAX_OBJ_TALLY)
+        tally_size[k] += r.end - r.start;
+    }
   }
+  for (int k = 0; k < ntally; k++) {
+    printf("  device object 0x%lx %.1f MiB\n", tally_obj[k],
+           tally_size[k] / 1048576.0);
+  }
+  uint64_t best = 0;
+  for (int k = 0; k < ntally; k++)
+    if (tally_size[k] > best) {
+      best = tally_size[k];
+      g_dmem_obj = tally_obj[k];
+    }
+  printf("direct memory object 0x%lx\n", g_dmem_obj);
   printf("writable regions not matching: %d\n", bad);
   return bad;
+}
+
+static int skip_device_region(const struct frd_region *r) {
+  if (r->type != KVME_TYPE_DEVICE)
+    return 0;
+  uint64_t obj = vmobj_of(r->start);
+  if (obj == g_dmem_obj)
+    return 0;
+  printf("  skip device 0x%lx-0x%lx obj 0x%lx (not direct memory)\n", r->start,
+         r->end, obj);
+  return 1;
 }
 
 static int write_regions(int fd, const struct frd_header *h, char *buf,
@@ -230,7 +271,7 @@ static int write_regions(int fd, const struct frd_header *h, char *buf,
     uint64_t len = r.end - r.start;
     int g = group_of(r.type);
     int apply = (GROUPS & g) && (r.prot & KVME_PROT_WRITE) &&
-                covered_writable(r.start, r.end);
+                covered_writable(r.start, r.end) && !skip_device_region(&r);
     off_t data = lseek(fd, 0, SEEK_CUR);
     lseek(fd, len, SEEK_CUR);
     if (read_all(fd, &nholes, sizeof(nholes)))
@@ -317,12 +358,33 @@ static int set_kobjs(void) {
   return failed;
 }
 
+static void mark_kept_threads(void) {
+  int kept = 0, risky = 0;
+  for (uint32_t i = 0; i < g_nthreads; i++) {
+    struct thread_state *ts = &g_threads[i];
+    if (!ts->live || !debug_in_syscall(g_pid, ts->t.lwpid))
+      continue;
+    struct reg cur;
+    ptrace(PT_GETREGS, ts->t.lwpid, (caddr_t)&cur, 0);
+    if ((ts->t.flags & FRD_THREAD_IN_SYSCALL) && cur.r_rip == ts->r.r_rip &&
+        cur.r_rsp == ts->r.r_rsp) {
+      ts->keep = 1;
+      kept++;
+    } else {
+      printf("  lwp %u %s is in a syscall now but not at its dump site\n",
+             ts->t.lwpid, ts->t.name);
+      risky++;
+    }
+  }
+  printf("threads left sleeping in place: %d, mismatched: %d\n", kept, risky);
+}
+
 static int set_threads(void) {
   int failed = 0;
   for (uint32_t i = 0; i < g_nthreads; i++) {
     struct thread_state *ts = &g_threads[i];
     lwpid_t l = ts->t.lwpid;
-    if (!ts->live)
+    if (!ts->live || ts->keep)
       continue;
     if (ptrace(PT_SETREGS, l, (caddr_t)&ts->r, 0)) {
       printf("  lwp %d PT_SETREGS: %s\n", l, strerror(errno));
@@ -476,6 +538,7 @@ int main(void) {
     return 1;
   double t_stop = now();
   debug_drain(g_pid, 300);
+  debug_settle(g_pid, 1000);
 
   if (load_vmmap()) {
     printf("KERN_PROC_VMMAP failed: %s\n", strerror(errno));
@@ -518,6 +581,7 @@ int main(void) {
   logf_sync("kobjs\n");
   set_kobjs();
   logf_sync("threads\n");
+  mark_kept_threads();
   int tfail = set_threads();
   logf_sync("threads done\n");
 #ifdef TRACE

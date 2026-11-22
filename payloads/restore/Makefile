@@ -1,4 +1,4 @@
-LIBSRCS := ../lib/proc.c ../lib/debug.c ../lib/kobj.c
+LIBSRCS := ../lib/proc.c ../lib/debug.c ../lib/kobj.c ../lib/vmobj.c
 ELF := restore_cpu.elf
 include ../common.mk
 
