@@ -1,0 +1,9 @@
+*.elf
+*.o
+*.d
+build/
+dumps/
+*.bin
+*.lz4
+env.local.sh
+.DS_Store
